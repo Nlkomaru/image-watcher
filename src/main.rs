@@ -13,7 +13,7 @@ use config::{Config, is_path_match};
 use s3::S3Client;
 use event_handler::handle_event;
 
-fn process_existing_directories(config: &Config, s3_client: &S3Client, runtime: &Runtime) {
+fn process_existing_directories(config: &Config, s3_client: &mut S3Client, runtime: &Runtime) {
     for watch_dir in &config.watch_dir {
         println!("Processing pattern: {}", watch_dir.dir);
         let parts: Vec<&str> = watch_dir.dir.split('*').collect();
@@ -78,7 +78,7 @@ fn main() -> Result<()> {
     // Tokioランタイムを作成
     let runtime = Runtime::new().expect("Failed to create Tokio runtime");
     // S3クライアントを初期化
-    let s3_client = runtime.block_on(S3Client::new(
+    let mut s3_client = runtime.block_on(S3Client::new(
         &config.s3_region,
         &config.s3_bucket,
         &config.s3_access_key_id,
@@ -89,7 +89,7 @@ fn main() -> Result<()> {
     ));
 
     // 既存画像のアップロード
-    process_existing_directories(&config, &s3_client, &runtime);
+    process_existing_directories(&config, &mut s3_client, &runtime);
 
     // Create a channel to receive the events
     let (sender, receiver) = channel();
@@ -103,7 +103,7 @@ fn main() -> Result<()> {
     // Loop to receive events
     loop {
         match receiver.recv_timeout(Duration::from_secs(1)) {
-            Ok(event) => handle_event(event?, &s3_client, &runtime, &config),
+            Ok(event) => handle_event(event?, &mut s3_client, &runtime, &config),
             Err(RecvTimeoutError::Timeout) => continue, // Just continue on timeout
             Err(e) => return Err(notify::Error::generic(format!("Watch error: {:?}", e).as_str())),
         }

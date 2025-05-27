@@ -3,7 +3,7 @@ use crate::s3::S3Client;
 use crate::config::Config;
 use tokio::runtime::Runtime;
 
-pub fn handle_event(event: Event, s3_client: &S3Client, runtime: &Runtime, config: &Config) {
+pub fn handle_event(event: Event, s3_client: &mut S3Client, runtime: &Runtime, config: &Config) {
     match event.kind {
         notify::EventKind::Create(_) => println!("File created: {:?}", event.paths),
         notify::EventKind::Modify(_) => {
