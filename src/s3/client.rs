@@ -3,11 +3,11 @@ use aws_types::region::Region;
 use std::path::Path;
 use aws_credential_types::Credentials;
 use std::fs::metadata;
-use image::ImageFormat;
 use std::fs;
 use uuid::{Uuid, Timestamp, NoContext};
 use std::time::SystemTime;
 use walkdir::WalkDir;
+use crate::s3::util::{is_image, is_valid_size};
 
 pub struct S3Client {
     client: Client,
@@ -49,29 +49,8 @@ impl S3Client {
         }
     }
 
-    /// ファイルが画像かどうかを判定する
-    fn is_image(&self, path: &Path) -> bool {
-        // ファイルの拡張子から画像フォーマットを判定
-        if let Some(ext) = path.extension() {
-            if let Some(ext_str) = ext.to_str() {
-                return ImageFormat::from_extension(ext_str).is_some();
-            }
-        }
-        false
-    }
-
-    /// ファイルサイズが制限内かどうかを判定する
-    fn is_valid_size(&self, path: &Path) -> bool {
-        if let Ok(metadata) = metadata(path) {
-            let size = metadata.len();
-            size >= self.min_image_size && size <= self.max_image_size
-        } else {
-            false
-        }
-    }
-
     /// ディレクトリ内の画像ファイルをアップロードする
-    pub async fn upload_directory(&self, dir_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn upload_directory(&self, dir_path: &Path, dir_tag: &str, common_tags: &std::collections::HashMap<String, String>) -> Result<(), Box<dyn std::error::Error>> {
         println!("Uploading images from directory: {:?}", dir_path);
         
         // ディレクトリ内のファイルを再帰的に探索
@@ -82,9 +61,9 @@ impl S3Client {
             let path = entry.path();
             
             // ファイルで、画像で、サイズが制限内の場合のみアップロード
-            if path.is_file() && self.is_image(path) && self.is_valid_size(path) {
+            if path.is_file() && is_image(path) && is_valid_size(path, self.min_image_size, self.max_image_size) {
                 println!("Found image file: {:?}", path);
-                if let Err(e) = self.upload_file(path).await {
+                if let Err(e) = self.upload_file(path, dir_tag, common_tags).await {
                     eprintln!("Failed to upload file {:?}: {}", path, e);
                 }
             }
@@ -93,9 +72,9 @@ impl S3Client {
         Ok(())
     }
 
-    pub async fn upload_file(&self, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn upload_file(&self, path: &Path, dir_tag: &str, common_tags: &std::collections::HashMap<String, String>) -> Result<(), Box<dyn std::error::Error>> {
         // ファイルのメタデータを取得
-        let metadata = fs::metadata(path)?;
+        let metadata = metadata(path)?;
         let file_size = metadata.len();
 
         // ファイルサイズをチェック
@@ -117,9 +96,23 @@ impl S3Client {
 
         // 新しいファイル名を生成
         let new_key = format!("{}.{}", uuid, extension);
+        
+        let content_type = match extension {
+            "jpg" | "jpeg" => "image/jpeg",
+            "png" => "image/png",
+            "gif" => "image/gif",
+            _ => "application/octet-stream", // デフォルトのコンテンツタイプ
+        };
 
         // ファイルを読み込む
         let body = fs::read(path)?;
+
+        // S3のメタデータを作成
+        let mut metadata_map = std::collections::HashMap::new();
+        metadata_map.insert("dir-tag".to_string(), dir_tag.to_string());
+        for (k, v) in common_tags.iter() {
+            metadata_map.insert(k.clone(), v.clone());
+        }
 
         // S3にアップロード
         self.client
@@ -127,6 +120,8 @@ impl S3Client {
             .bucket(&self.bucket)
             .key(&new_key)
             .body(body.into())
+            .content_type(content_type)
+            .set_metadata(Some(metadata_map))
             .send()
             .await?;
 
